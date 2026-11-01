@@ -1,8 +1,8 @@
 # 011 相对上游 super-agent 的改动清单与升级/移植指南
 
 > **基线**：上游 `deepseek-ai/dsh-superagent-prototype`，commit `6337fc8`（2026-10-31，`package.json` 版本 0.1.0）。
-> **本 fork**：`D:\Deepseek_Harness\workspace\dsh-superagent-win`，版本 0.1.17，Windows 原生移植 + Router/Execute/Test 三角色 + 每角色模型端点 + 验证门禁 + 本地任务。**GitHub 默认关闭**：默认形态是纯本地任务，不需要 GitHub 账号、仓库、`gh` 或 git worktree；需要 GitHub 时在「设置 → 来源」里打开并填写仓库/CLI。
-> 支持两种运行形态：独立 profile（3082 页面）或主 profile（3080 左侧栏插件图标，本机当前）；主 profile 模式用 `embedded: true` 防止污染主 Harness 的进程环境（见 §2.2）。
+> **本 fork**：`D:\Deepseek_Harness\workspace\dsh-superagent-win`，版本 0.1.17，Windows 原生移植 + Router/Execute/Test 三角色 + 每角色模型端点 + 验证门禁 + 本地任务。**GitHub 默认关闭**：默认形态是纯本地任务，不需要 GitHub 账号、仓库、`gh` 或 git worktree；主 profile 的 embedded 模式仅支持本地任务。
+> 运行形态：主 profile（3080 左侧栏插件图标）；用 `embedded: true` 防止污染主 Harness 的进程环境（见 §2.2）。
 >
 > 本文回答两件事：**相对原始 super-agent 改了哪些逻辑**（便于跟进上游更新），以及**怎么复制到另一台电脑**。
 > 文件级差异由上游 checkout 与本 fork 逐文件比较生成（排除 `node_modules`、`lib`、`.artifacts`、`*.tgz`，见 §1）。
@@ -26,16 +26,6 @@
 - `git remote -v` 里有 `upstream → https://github.com/deepseek-ai/dsh-superagent-prototype.git`
 - 已执行 `git fetch upstream main`，本地有 `upstream/main`
 
-**重新生成差异清单**：
-
-```powershell
-cd D:\Deepseek_Harness\workspace\dsh-superagent-win
-git fetch upstream main
-git diff --stat upstream/main HEAD          # 已提交版本的差异
-git diff --stat upstream/main               # 含工作区未提交改动
-git diff --name-status upstream/main HEAD   # 新增/修改/删除文件
-git diff upstream/main HEAD -- src\policy.ts   # 单文件细看
-```
 
 **当前统计**（v0.1.17，`git diff --stat upstream/main`）：**52 个文件，+3285 / −145 行**。
 
@@ -55,22 +45,8 @@ git diff upstream/main HEAD -- src\policy.ts   # 单文件细看
 | `src/executor/dsh.ts` | prepare 命令在 Windows 用 `powershell.exe -NoProfile -NonInteractive -Command`，其他平台用 `sh -c`（其余为扩展改动，见 B/C 层） | Windows 无 `sh`；执行设置里的准备命令按 PowerShell 文档化 | 若上游改 prepare 命令的执行方式，保留平台分支 |
 | `src/app/sessions.ts` | ① `SHELL_TOOLS` 按平台取 `pwsh` 或 `bash`，限制工具时只命名本平台有的 shell 工具；② `noWait()` 增加 PowerShell 的 `Start-Sleep`/`sleep` 识别；③ worker 工具白名单同时含两种 shell 名称，由 `workOnly()` 按实际可用过滤 | DSH presets 在 Windows 只装配 `pwsh`；`tools.restrict()` 拒绝不存在的工具名 | 保留平台 shell 常量与 `SLEEP_PWSH`。上游若改注册/限制工具逻辑，重点回归“主 Session 与 worker 能正常启动、不因 restrict 报错” |
 | `scripts/dsh-superagent.ps1`（新增） | 服务管理器：start/stop/restart/status、pid 文件、`launch.cmd`、日志与 `.err.log` 写到 `.artifacts/`；用 `Invoke-CimMethod Win32_Process.Create` 启动，以脱离 DSH 工具调用的 Windows Job Object | 上游的 `scripts/dsh-superagent` 是 Python + tmux + fcntl，Windows 不可用；从 DSH 会话里普通 spawn 的常驻进程会被 Job Object 连坐杀掉 | 这是 fork 自有文件，通常不用跟上游；注意 DSH 升级后 Win32_Process/launch 方式仍有效 |
-| `examples/profile.windows.cordis.patch.yml`（新增） | Windows profile 示例：`webserver.port: 3082`、`dsh-superagent.stateDir` 用绝对 Windows 路径 | profile 配置在不同机器要改 | 与上游 `examples/profile.cordis.patch.yml` 保持同结构，只多 Windows 路径说明 |
 | `docs/009-windows.md`（新增） | Windows 与上游差异、依赖、账号模型、服务脚本、`GH_CONFIG_DIR` | 文档 | 上游更新后补“新版本差异”段 |
 | `tests/win-env.spec.ts`（新增） | Windows 环境适配的单元测试 | 防止路径/PATHEXT/显式 env 回归 | 保持通过 |
-
-**仓库外、但每台机器都要重做的 Windows 启动集成**（本机已做，脚本在 `D:\Deepseek_Harness`）：
-
-1. `start_dsh.bat`：**独立 3082 模式**下加一行启动 superagent 服务（隐藏窗口）；**主 profile 插件模式**下改为注释（见 §2.2）：
-   ```bat
-   powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0workspace\dsh-superagent-win\scripts\dsh-superagent.ps1" -Action start -GhConfigDir "%USERPROFILE%\.config\gh-agent" >nul 2>&1
-   ```
-2. `end_dsh.bat`：结束进程时排除 superagent 的 DSH 进程，避免关主 harness 时把 3082 面板一起关掉。
-   在进程发现 PowerShell 的 node 过滤条件后追加：
-   ```powershell
-   -and $c -notlike '*--profile superagent*'
-   ```
-3. 面板快捷方式：`D:\Deepseek_Harness\打开Superagent面板.bat` → `scripts/open-panel.ps1`（端口未监听时先启服务，再从最新日志取 token 打开浏览器）；已在本机桌面创建 `Superagent 面板.lnk`。
 
 ### 2.1 本地模式（GitHub 关闭时的默认形态）
 
@@ -85,34 +61,25 @@ v0.1.16 起，这个 fork 默认不做 GitHub 操作。对应改动：
 | `src/app/http.ts` + `client/deployment.tsx` | `/state` 的 `accounts` 增加 `localOnly`；面板「部署」页显示“本地模式（GitHub 关闭）”及说明，不再显示空仓库/空账号 |
 | 执行设置（数据） | 不再需要 prepare 命令；本机已把它清空。工单目录就是普通文件夹，不再运行 git worktree/clone，也没有 PR/branch 交付 |
 | `src/app/sessions.ts` | 本地任务 worker 提示词追加 `LOCAL_TASK_NOTE`（无 GitHub/PR/远端会话；直接改目录并报告） |
-| `src/deployment.ts` + `src/app/setup.ts`（v0.1.17） | 新增机器配置 `embedded: true`：插件跑在主 DSH profile 内时，**不把 worker shim/agent git config 应用到共享进程环境**（否则主 Harness 所有 Session 的 `gh`/git 都会变成 agent 的隔离环境）；embedded 模式只支持本地任务（GitHub Source 打开会得到 setup 错误，GitHub 请用独立 profile）。新增测试 `tests/setup-local.spec.ts` |
+| `src/deployment.ts` + `src/app/setup.ts`（v0.1.17） | 新增机器配置 `embedded: true`：插件跑在主 DSH profile 内时，**不把 worker shim/agent git config 应用到共享进程环境**（否则主 Harness 所有 Session 的 `gh`/git 都会变成 agent 的隔离环境）；embedded 模式只支持本地任务，GitHub Source 打开会得到 setup 错误。新增测试 `tests/setup-local.spec.ts` |
 
 **本地模式下的行为**
 - 任务创建：面板「新建任务」（可选已有项目目录）或收件箱目录；全部走 Router → Ticket → Worker → Test。
 - 交付：写到本地 JSONL outbox（`<stateDir>/local/outbox.jsonl` 或 `<inboxDir>/outbox.jsonl`）。
 - 工作区：给了 `directory` 就直接用它（`execution.mounted`，不运行 prepare/git 检查）；没给就在执行设置的目录根下新建普通文件夹。
 - 不需要 `gh` 登录、不需要 `GH_CONFIG_DIR`、不需要仓库；服务启动脚本的 `-GhConfigDir` 可继续传（本地模式下不用它）。
-- 需要 GitHub 时：设置 → 来源 → 打开 GitHub，填 repository/CLI；Windows 上还要给 superagent 进程设置 `GH_CONFIG_DIR`，保存后重启该 profile 让 setup 重新跑 GitHub 分支。
+- 当前主 profile 使用 `embedded: true`，只支持本地任务；不要打开 GitHub Source。
 
 **本机验证（v0.1.16）**
 - `GET /state`：`accounts.localOnly=true`、`runtime/local/model-endpoints=ready`、`github=paused Off`。
 - worker 环境：`gh.cmd` 提示 “GitHub is off in local mode”；`worker-gitconfig` 无 `[credential "https://github.com"]`。
 - 本地任务 ticket `65093167…`（**不指定项目目录**）：worker 在普通目录创建 `local-ok.txt` → `working/testing` → PASS → ended；报告写“无 GitHub 仓库/PR，无需 PR”，outbox 收到 ack+reply。这验证了不再需要 git worktree/prepare/PR。
 
-### 2.2 运行形态：独立 3082 页面 vs 主 Harness 插件（本机已切主界面）
+### 2.2 主 Harness 插件模式（本机当前）
 
-dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客户端注册 `sidebar.panellist` 图标（锤子）和面板页。**图标出现在哪个 DSH 的左侧栏，取决于 bundle 装在哪个 profile。**
+dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客户端在主 Harness 左侧栏注册 `sidebar.panellist` 图标（锤子）和面板页。插件运行在主 Harness 进程内，入口为 `http://127.0.0.1:3080` 左侧栏的 Superagent 图标。
 
-| | A. 独立 profile（3082） | B. 主 profile（3080 左侧栏） |
-| --- | --- | --- |
-| bundle 安装位置 | `%USERPROFILE%\.dsh\profiles\superagent` | `%USERPROFILE%\.dsh\profiles\web`（你平时用的主 Harness） |
-| 入口 | 自带 DSH 的 3082 页面/桌面快捷方式 | 主 Harness 3080 左侧栏的 Superagent 图标，同 UI 内打开 |
-| 进程/生命周期 | 独立 DSH 进程，主 Harness 重启/崩溃不影响 | 跑在主 Harness 进程内，同生共死 |
-| Session 列表 | 独立列表 | worker/tester/orchestrator Session 会出现在主 Session 列表 |
-| stateDir | 各自一份；本机与 B 共用同一个 | 与 A 共用同一个（不能同时运行，会抢锁） |
-| 适用 | 希望隔离、独立重启、独立模型配置 | 希望像普通插件一样常驻主界面 |
-
-**本机当前选择 B（主界面插件模式，2026-11-01 切换并已热加载生效）**，已完成的文件级操作：
+**本机安装与配置（2026-11-01 切换并已热加载生效）**：
 
 1. `dsh plugin --profile web add file:...dsh-superagent-0.1.16.tgz` —— 主 profile 的 `package.json` 增加依赖，并把 `dsh-superagent` 加进 `dsh.profile.bundles`；
 2. `%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml` 末尾追加：
@@ -122,26 +89,18 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
        stateDir: C:/Users/hangi/.dsh/state/superagent
        embedded: true
    ```
-   （与原来的 3082 共用同一个 stateDir，切换后历史工单/设置/模型端点都还在。`embedded: true` 是 v0.1.17 新增：主 profile 与其它插件共享同一个 DSH 进程，**不能再把 worker shim/agent git config 写进进程环境**，否则主 Harness 的所有会话都会被换成 agent 的 `gh`/git；embedded 模式因此只做本地任务，GitHub 请回独立 profile。）
-3. 停止 3082 服务（释放 stateDir 锁）；
-4. `start_dsh.bat` 里“启动 superagent 3082 服务”的那行改为注释（否则主 Harness 与 3082 会抢同一个 stateDir）；
-5. 桌面 `Superagent 面板.lnk` 移到 `.artifacts\Superagent 面板.lnk.bak`（避免误启动 3082）；
-6. 回滚脚本：`scripts/rollback-main-integration.ps1` + `D:\Deepseek_Harness\回滚Superagent到独立页面.bat`（恢复主 profile 的 package.json/cordis.patch.yml 备份、恢复桌面快捷方式、恢复 start_dsh 自动启动行；重启主 Harness 后 3082 自动回来）。
+   `stateDir` 保存历史工单、设置与模型端点。`embedded: true` 是 v0.1.17 新增：主 profile 与其它插件共享同一个 DSH 进程，**不能再把 worker shim/agent git config 写进进程环境**，否则主 Harness 的所有会话都会被换成 agent 的 `gh`/git；embedded 模式因此只做本地任务，不支持 GitHub Source。
 
 **生效方式与结果（v0.1.17 已在本机生效，无需再重启）**：
 - 安装 bundle + 修改 profile patch 后，运行中的主 Harness **热加载**了插件；`http://127.0.0.1:3080/orchestrator/api/state` 返回 200；
 - `embedded: true` + 新版已生效：主进程环境已恢复干净（`GIT_CONFIG_GLOBAL` 为空，`PATH` 不再包含 superagent 的 `worker-bin`）；
 - 通过 3080 API 跑了一个本地任务 ticket `f86a3779…`（不填项目目录）：`working/testing → PASS → ended`，`main-ok.txt` 创建成功，outbox 收到 ack+reply——主界面模式端到端可用；
-- 3082 端口不再监听；`start_dsh.bat` 不再启动独立服务；
 - **入口**：浏览器打开/刷新主 Harness（`http://127.0.0.1:3080`）后，左侧栏应出现 Superagent 图标（锤子）；若页面是插件热加载前打开的，按 F5 刷新一次。若刷新后仍未出现，关闭并重新运行 `start_dsh.bat` 一次（bundle 图在进程启动时必定加载）。
 
 **重启后验证清单**（若执行了重启）：
 - 主 Harness 左侧栏出现 Superagent 图标；点开概览看到「本地任务 / 三个 Agent 的模型」；
 - `http://127.0.0.1:3080/orchestrator/api/state`（带有效登录）返回 `runtime=ready`、`accounts.localOnly=true`；
-- 设置 → 部署显示「本地模式（GitHub 关闭）」；设置 → 模型三张卡正常；
-- 3082 端口不再监听（`Get-NetTCPConnection -LocalPort 3082` 为空）。
-
-**回滚**：双击 `D:\Deepseek_Harness\回滚Superagent到独立页面.bat`，然后重启主 Harness；`start_dsh.bat` 会重新拉起 3082，桌面快捷方式也会恢复。
+- 设置 → 部署显示「本地模式（GitHub 关闭）」；设置 → 模型三张卡正常。
 
 ## 3. B 层 P1：每角色模型端点
 
@@ -260,10 +219,9 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
    pnpm exec vitest run tests/local.spec.ts tests/verification.spec.ts tests/github-read.spec.ts tests/win-env.spec.ts
    pnpm build
    pnpm pack
-   dsh plugin --profile superagent add file:.\dsh-superagent-<ver>.tgz
-   powershell -ExecutionPolicy Bypass -File scripts\dsh-superagent.ps1 -Action restart -GhConfigDir "$env:USERPROFILE\.config\gh-agent"
+   dsh plugin --profile web add file:.\dsh-superagent-<ver>.tgz
    ```
-   然后人工/脚本验证：`runtime=ready`、`local=ready`、概览三个模型卡、设置→模型三张卡、设置→验证、本地任务跑一次 PASS、必要时 GitHub 任务。
+   重启主 Harness，然后人工/脚本验证：`runtime=ready`、`local=ready`、概览三个模型卡、设置→模型三张卡、设置→验证、本地任务跑一次 PASS。
 6. **回滚/对照**：每次升级前 `git tag fork-vX.Y.Z`；出问题 `git switch windows-fork && git reset --hard fork-vX.Y.Z`（注意 stateDir 数据库独立于代码，回退代码不会自动回退 settings schema；本次扩展字段均可选、无 schema 版本变化，见 §7）。
 7. **版本号**：每次打包前改 `package.json` 的 `version`（DSH plugin manager 按包版本识别更新）。
 
@@ -281,52 +239,25 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
    pnpm build
    pnpm pack
    ```
-2. **选择运行形态并安装 bundle**（两种模式见 §2.2；不能同时用同一 stateDir）：
-   - **A. 独立 profile（3082，隔离、独立重启）**：
-     - 目标目录：`%USERPROFILE%\.dsh\profiles\superagent\`
-     - `cordis.patch.yml` 参考 `examples/profile.windows.cordis.patch.yml`，至少：
-       ```yaml
-       - id: webserver
-         config:
-           host: 127.0.0.1
-           port: 3082
-       - id: dsh-superagent
-         config:
-           stateDir: C:/Users/<me>/.dsh/state/superagent
-       ```
-     - 安装插件：`dsh plugin --profile superagent add file:.\dsh-superagent-<ver>.tgz`
-   - **B. 主 profile（3080 左侧栏插件图标，本机当前模式）**：
-     - 安装到主 profile（`web`；profile 名以 `%USERPROFILE%\.dsh\profiles\` 下实际为准）：
-       `dsh plugin --profile web add file:.\dsh-superagent-<ver>.tgz`
-     - 在 `...\profiles\web\cordis.patch.yml` 末尾加：
-       ```yaml
-       - id: dsh-superagent
-         config:
-           stateDir: C:/Users/<me>/.dsh/state/superagent
-       ```
-       若之前用独立模式，stateDir 可与它共用（数据/设置/密钥都在），但必须停掉 3082 服务，并在 `start_dsh.bat` 注释掉 3082 自动启动行（见 §2.2）。
-     - 重启主 Harness；左侧栏出现 Superagent 图标即成功。
-3. **启动（按模式）**：
-   - **A. 独立 3082**：
-     ```powershell
-     powershell -ExecutionPolicy Bypass -File scripts\dsh-superagent.ps1 -Action start
-     powershell -ExecutionPolicy Bypass -File scripts\dsh-superagent.ps1 -Action status
+2. **安装 bundle 到主 profile**（配置详见 §2.2）：
+   - 安装到主 profile（`web`；profile 名以 `%USERPROFILE%\.dsh\profiles\` 下实际为准）：
+     `dsh plugin --profile web add file:.\dsh-superagent-<ver>.tgz`
+   - 在 `...\profiles\web\cordis.patch.yml` 末尾加：
+     ```yaml
+     - id: dsh-superagent
+       config:
+         stateDir: C:/Users/<me>/.dsh/state/superagent
+         embedded: true
      ```
-     打开日志里的 `http://127.0.0.1:3082/?token=…`（或跑 `scripts/open-panel.ps1`）。此时不需要 `GH_CONFIG_DIR`。
-   - **B. 主 profile**：不需要单独服务；确认 3082 已停止后，关闭并重启主 Harness（`end_dsh.bat` → `start_dsh.bat`），图标出现在 3080 左侧栏。
-4. **（可选）启用 GitHub**：
-   - 专用配置文件目录：`%USERPROFILE%\.config\gh-agent`；`gh auth login`（机器人账号）或复制已有 `hosts.yml`（含 token）
-   - 在插件配置里指定 `gh` 路径；GitHub Source 设置仓库与 CLI；启动服务时带 `-GhConfigDir` / 环境变量 `GH_CONFIG_DIR`（否则 setup 会拒绝以免以操作者身份行动）。
+3. **启动主 Harness**：关闭并重新运行 `start_dsh.bat`，或按现有方式重启主 Harness；左侧栏出现 Superagent 图标即成功。
+4. **GitHub 说明**：主 profile 的 embedded 模式只支持本地任务，不要启用 GitHub Source；无需配置 `GH_CONFIG_DIR`、仓库或 GitHub CLI。
 5. **面板配置（本地模式）**：
    - 设置 → 模型：需要独立端点的角色填 URL/模型/Key，点「测试连接」。
    - 设置 → 验证：开关、最多轮数、超时、团队验证说明。
    - 概览 → 新建任务（可填已有项目目录）；设置 → 来源 → 本地任务：收件箱目录、轮询间隔。
    - 设置 → 部署：应显示 **本地模式（GitHub 关闭）**。
-6. **仓库外的机器级集成**（同 §2 末尾；按模式取舍）：
-   - 独立 3082 模式：`start_dsh.bat` 加一行启动 superagent 服务（本地模式可不传 `-GhConfigDir`）；新建面板快捷方式/`打开Superagent面板.bat`（可复用 `scripts/open-panel.ps1`）；
-   - 主 profile 模式：`start_dsh.bat` **不要**启动 3082（改为注释）；不需要 3082 快捷方式；回滚脚本见 §2.2；
-   - `end_dsh.bat` 的 node 过滤条件加 `-and $c -notlike '*--profile superagent*'`（独立模式需要，主模式无副作用）。
-7. **smoke 验收**（主 profile 模式改在 3080 UI/API 上做）：
+6. **仓库外的机器级集成**：主 Harness 继续通过现有 `start_dsh.bat` 启动，无需额外的 superagent 服务或面板快捷方式；入口是 3080 左侧栏的 Superagent 图标。
+7. **smoke 验收**（在主 profile 的 3080 UI/API 上进行）：
    - `GET /orchestrator/api/state`：`runtime=ready`、`local=ready`；`github=paused Off`（本地模式）。
    - `setup.accounts.localOnly=true`；面板「部署」页显示本地模式。
    - 概览：三个模型摘要卡可见；设置 → 模型三张卡可见；设置 → 验证可保存。
@@ -347,38 +278,20 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
 | 验证门禁 FAIL→返修→PASS | ticket `ce9063c7…`：round1 FAIL → worker 补 verified.txt → round2 PASS |
 | **纯本地模式（GitHub 关闭）** | `accounts.localOnly=true`、`github=paused Off`；worker 的 `gh.cmd` 失败、`worker-gitconfig` 无 GitHub credential helper；ticket `65093167…` **不填项目目录**：普通目录创建 `local-ok.txt` → `working/testing → PASS → ended`，报告写“无 GitHub 仓库/PR，无需 PR”，outbox ack+reply |
 | 面板 | 概览「三个 Agent 的模型」、设置→模型三张卡、设置→验证、概览「本地任务」、设置→部署「本地模式（GitHub 关闭）」；headless Chrome 无 console error；截图 `.artifacts/overview-role-models.png`、`.artifacts/models-three-roles-014.png`、`.artifacts/test-settings-page.png` |
-| 服务 | v0.1.16 的独立 3082 模式已完整验证。**v0.1.17 本机已切换主界面插件模式并生效**：bundle 装进 `web` profile，`cordis.patch.yml` 配 `stateDir` + `embedded: true`，运行中的主 Harness 热加载插件；3080 `/orchestrator/api/state` 返回 200、runtime ready、localOnly=true、github Off，主进程环境干净（无 worker-bin/GIT_CONFIG_GLOBAL 污染）；通过 3080 API 的本地任务 `f86a3779…` 完成 `working/testing → PASS → ended` + outbox reply；3082 已停止、`start_dsh` 不再启动独立服务 |
+| 服务 | **v0.1.17 本机已切换主界面插件模式并生效**：bundle 装进 `web` profile，`cordis.patch.yml` 配 `stateDir` + `embedded: true`，运行中的主 Harness 热加载插件；3080 `/orchestrator/api/state` 返回 200、runtime ready、localOnly=true、github Off，主进程环境干净（无 worker-bin/GIT_CONFIG_GLOBAL 污染）；通过 3080 API 的本地任务 `f86a3779…` 完成 `working/testing → PASS → ended` + outbox reply |
 
 **已知限制**
-- **GitHub 默认关闭**。本地模式下没有仓库/PR/`gh` 操作；需要 GitHub 时去「设置 → 来源」显式打开并填 repository/CLI，同时给进程 `GH_CONFIG_DIR`。
+- **GitHub 默认关闭**。本地模式下没有仓库/PR/`gh` 操作。
 - GitHub 模式仍会跳过与 agent 同账号的消息（`sameName(item.user.login, login)`），所以机器人无法给自己发 GitHub 触发；完整 GitHub E2E 需操作者用主账号发 mention。
 - Feishu Source 未移植（上游依赖 `lark-cli` + POSIX shell）。
 - 全量 `pnpm test` 在 Windows 有既存 POSIX 夹具失败（service 脚本/chmod/temp 权限/Feishu 消费者），定向测试为准。
 - 模型 endpoint 的 adapter 只覆盖 OpenAI 兼容 `/chat/completions`；其他协议需另写适配器。
 - 本地模式仍要求 git 2.32+ 吗？**不要求**：GitHub 关闭时 setup 不再运行 `gh`/仓库检查；worker git config 仍会写（隔离），但机器上没有 git 也不影响本地任务（worker 不应调用 git）。
-- **主 profile（embedded）模式只支持本地任务**：为了不污染主 Harness 进程环境，embedded 模式不应用 worker shim/git config；因此 worker 会继承主进程的 git/gh 环境。需要 agent 专用 GitHub 账号/隔离 git 时，用独立 profile 模式。
+- **主 profile（embedded）模式只支持本地任务**：为了不污染主 Harness 进程环境，embedded 模式不应用 worker shim/git config；因此 worker 会继承主进程的 git/gh 环境，不要启用 GitHub Source。
 
 ## 附录 A：本机 profile 配置（可复制后改路径）
 
-**A. 独立 profile 模式**（`%USERPROFILE%\.dsh\profiles\superagent\cordis.patch.yml`）：
-
-```yaml
-- id: webserver
-  config:
-    host: 127.0.0.1
-    port: 3082
-- id: dsh-superagent
-  config:
-    stateDir: C:/Users/<me>/.dsh/state/superagent
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: deepseek-official
-    model: deepseek-flash
-    reasoningEffort: max
-```
-
-**B. 主 profile 插件模式**（本机当前；`%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml` **末尾追加**，不要写 webserver 端口）：
+**主 profile 插件模式**（本机当前；`%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml` **末尾追加**，不要写 webserver 端口）：
 
 ```yaml
 - id: dsh-superagent
@@ -387,7 +300,7 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
     embedded: true
 ```
 
-安装：`dsh plugin --profile web add file:.\dsh-superagent-<ver>.tgz`；重启主 Harness 后图标出现在 3080 左侧栏。`embedded: true` 让插件不修改主进程环境（主 profile 模式只支持本地任务；GitHub 用独立 profile）。切换/回滚细节见 §2.2。
+安装：`dsh plugin --profile web add file:.\dsh-superagent-<ver>.tgz`；重启主 Harness 后图标出现在 3080 左侧栏。`embedded: true` 让插件不修改主进程环境（主 profile 模式只支持本地任务，不支持 GitHub Source）。配置细节见 §2.2。
 
 ## 附录 B：配置入口速查（都在面板 UI，不用改 YAML）
 
@@ -395,7 +308,7 @@ dsh-superagent 是标准 DSH bundle/插件：服务端注册 orchestrator，客�
 | --- | --- |
 | Router/Executor/Tester 的 URL、模型、API Key、测试连接 | 设置 → 模型（概览也有摘要与「配置模型」按钮） |
 | 验证门禁开关、最多轮数、超时、团队验证说明 | 设置 → 验证 |
-| **GitHub 开/关（默认关 = 纯本地模式）** | 设置 → 来源 → GitHub（打开后填 repository/CLI，重启 profile 生效） |
+| **GitHub 状态（默认关 = 纯本地模式）** | 设置 → 来源 → GitHub；主 profile 的 embedded 模式不要开启 |
 | 查看当前是本地模式还是 GitHub 模式 | 设置 → 部署（仓库与账号 一栏） |
 | 本地任务创建 | 概览 → 本地任务 → 新建任务 |
 | 本地收件箱目录/轮询间隔 | 设置 → 来源 → 本地任务 |
